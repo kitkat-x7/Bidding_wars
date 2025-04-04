@@ -23,7 +23,7 @@ wss.on('connection',(socket,req)=>{
         socket.send('Hello! Message From Server!!');
         socket.on('message',async (data)=>{  
         try{
-            const Data=data.toString()
+            const Data=data.toString();
             if(typeof(Data)==='string'){
                 const message=JSON.parse(Data);
                 if(message.type==='create'){
@@ -91,13 +91,7 @@ wss.on('connection',(socket,req)=>{
                     }else{
                         clearTimeout(Auction_Close);
                         Auction_Close=setTimeout(async () => {
-                            const Data=await Close_Auction({
-                                room_id:message.payload.auction_room_id,
-                                initial_bid:message.payload.initial_bid,
-                                final_bid:message.payload.bid,
-                                findal_bidder_id:message.payload.user_id,
-                                status:"Completed",
-                            });
+                            const Data=await Close_Auction(message.payload.auction_room_id);
                             if(typeof(Data)!='string' && Data!=null){
                                 for(let client of Data){
                                     if(client.readyState=== WebSocket.OPEN){

@@ -1,8 +1,9 @@
 import { Create_Room,Bidding_Chat, Update_Room, Update_Auction, Get_Auction,Create_Business_History, Get_Item, Update_Item } from "./database_layer";
-import WebSocket = require("ws");
+import WebSocket from "ws";
 import { Post_Notification } from "../Notifications/database_layer";
-
+import { get_room_cache,get_purse_cache,set_room_cache,set_purse_cache,del_room_cache,del_purse_cache, get_bid_cache, set_bid_cache, get_item_cache, set_item_cache, del_bid_cache, del_item_cache } from "../../Cache/cache_module";
 import { PrismaClient} from "@prisma/client";
+import { getbalance } from "../Authentication & User/Wallet/database_layer";
 const client=new PrismaClient();
 
 interface Create_Auction_Room_Data{
@@ -11,11 +12,6 @@ interface Create_Auction_Room_Data{
     creater_id:number,
     client:WebSocket,
     start_time:string,
-}
-interface Member_details{
-    bidder_id:number,
-    client:WebSocket,
-    creater_id:number,
 }
 interface Join_Auction_Room{
     room_id:number,
@@ -38,16 +34,13 @@ interface Final_data{
     findal_bidder_id:number,
     status:RoomStatusType
 }
-
+type ItemStatusType = "Sold" | "Unsold" | "Bidding" | "Onhold";
 interface Disconnect_Data{
     bidder_id:number,
     room_id:number,
     client:WebSocket,
     creater_id:number
 }
-
-let Rooms = new Map<number,Member_details[]>();
-let Bid_Data = new Map<number,number>();
 
 export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
     try{
@@ -58,14 +51,25 @@ export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
                 creater_id:data.creater_id,
                 start_time:data.start_time,
             }
+            //Cache to get Item Status
+            //Check with GPT when 2 create request of same Item hits with Transaction enabled
+            //Create a Cache for Previous Chats
             const Item_Status=await Get_Item(Auction_Room.item_id,tx);
-            if(typeof(Item_Status)!='string'){
+            
+            if(typeof(Item_Status)!='string' && Item_Status!=null){
                 if(Item_Status.status==='Bidding' || Item_Status.status==='Onhold'){
                     return `Cannot create an Auction Room, as Item with Itemid:${Item_Status.id} is already in the room.`
                 }
                 if(Item_Status.owner_id!=Auction_Room.creater_id){
                     return `Item with Itemid:${Item_Status.id} belongs to other person.`
                 }
+                set_item_cache({
+                    item_id:Item_Status.id,
+                    name:Item_Status.name,
+                    owner_id:Item_Status.owner_id,
+                    description:Item_Status.description,
+                    status:Item_Status.status
+                });
             }if(typeof(Item_Status)=='string'){
                 return Item_Status;
             }if(Item_Status==null){
@@ -73,22 +77,29 @@ export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
             }
             const Room_Details=await Create_Room(Auction_Room,tx);
             if(Room_Details!=null && typeof(Room_Details)!='string'){
-                if(!Rooms.get(Room_Details.id)){
-                    Rooms.set(Room_Details.id,[{
+                if(!await get_room_cache(Room_Details.id)){
+                    await set_room_cache(Room_Details.id,{
                         bidder_id:Room_Details.creater_id,
                         client:data.client,
                         creater_id:Room_Details.creater_id
-                    }]);
-                    if(!Bid_Data.get(Room_Details.id)){
-                        Bid_Data.set(Room_Details.id,100);
-                    }
+                    });
                 }
-                const Room_Data=Rooms.get(Room_Details.id);
-                if(Room_Data){
-                    for(let item of Room_Data){
-                        console.log(item)
-                    }
+                if(!await get_bid_cache(Room_Details.id)){
+                    set_bid_cache({
+                        room_id:Room_Details.id,
+                        bid:0,
+                        bidder_id:Room_Details.creater_id,
+                        creater_id:Room_Details.creater_id,
+                        item_id:Room_Details.item_id,
+                        start_time:Room_Details.start_time,
+                    });
                 }
+                // const Room_Data=await get_room_cache(Room_Details.id);
+                // if(Room_Data){
+                //     for(let item of Room_Data){
+                //         console.log(item)
+                //     }
+                // }
                 const Update_Status=await Update_Item({
                     id:Item_Status.id,
                     description:Item_Status.description,
@@ -100,8 +111,8 @@ export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
                 if(Update_Status===null){
                     return `Server Error`;
                 }
-                //Will see notifications
-                await Post_Notification({
+                //No await needed for notification
+                Post_Notification({
                     userid:data.creater_id,
                     message:`Room: ${Room_Details.id} has been created and auction will start from ${Room_Details.start_time}`,
                 });
@@ -120,28 +131,30 @@ export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
 
 export const Join_Auction_Room=async (data:Join_Auction_Room)=>{
     try{
-        if(Rooms.get(data.room_id)){
-            const Room_Details=Rooms.get(data.room_id);
+        const Room=await get_room_cache(data.room_id);
+        if(Room){
+            const Room_Details=Room;
             if(Room_Details?.includes({
                 bidder_id:data.bidder_id,
                 client:data.client,
-                creater_id:data.bidder_id
+                creater_id:data.bidder_id,
             })){
                 return `Client_id: ${data.creater_id} already exists in the room`;
             }else{
-                Rooms.get(data.room_id)?.push({
+                await set_room_cache(data.room_id,{
                     bidder_id:data.bidder_id,
                     client:data.client,
                     creater_id:data.bidder_id
                 });
             }
-            const Room_Data=Rooms.get(data.room_id);
+            const Room_Data=await get_room_cache(data.room_id);
             if(Room_Data){
                 let Client_Data:WebSocket[]=[];
                 for(let item of Room_Data){
                     Client_Data.push(item.client);
                 }
-                await Post_Notification({
+                //No await needed for notification
+                Post_Notification({
                     userid:data.creater_id,
                     message:`A new member: ${data.bidder_id} joined the auction room: ${data.room_id}`,
                 });
@@ -160,36 +173,82 @@ export const Join_Auction_Room=async (data:Join_Auction_Room)=>{
 export const Auction_Bids=async (data:bid_Data)=>{
     try{
         return client.$transaction(async (tx) => {
-            const Room_Data=Rooms.get(data.auction_room_id);    
+            const Room_Data=await get_room_cache(data.auction_room_id);    
             if(Room_Data){
-                const Data=await Get_Auction(data.auction_room_id,tx);
-                if(Data!=null && typeof(Data)!='string'){
-                    if(Data.start_time){
-                        const Time_Elapsed = new Date(Data.start_time).getTime();
-                        const milli_secs_elapsed = Time_Elapsed - Date.now();
-                        if(milli_secs_elapsed>0){
-                            return `Auction on room ${Data.id} hasn't started yet.`;
+                let Data=await get_bid_cache(data.auction_room_id);
+                if(Data==null){
+                    let Data1=await Get_Auction(data.auction_room_id,tx);
+                    if(typeof(Data1)=='string'){
+                        return Data1;
+                    }
+                    else if(Data1==null){
+                        return "No Auction Found"
+                    }
+                    else{
+                        Data={
+                            room_id:Data1.id,
+                            bid:Data1.initial_bid,
+                            bidder_id:Data1.findal_bidder_id,
+                            creater_id:Data1.creater_id,
+                            item_id:Data1.item_id,
+                            start_time:Data1.start_time,
                         }
+                        set_bid_cache({
+                            room_id:Data1.id,
+                            bid:Data1.initial_bid,
+                            bidder_id:Data1.findal_bidder_id,
+                            creater_id:Data1.creater_id,
+                            item_id:Data1.item_id,
+                            start_time:Data1.start_time,
+                        });
+                    }
+                }
+                // Will use EPOACH
+                if(Data.start_time){
+                    const Time_Elapsed = new Date(Data.start_time).getTime();
+                    const milli_secs_elapsed = Time_Elapsed - Date.now();
+                    if(milli_secs_elapsed>0){
+                        return `Auction on room ${Data.room_id} hasn't started yet.`;
+                    }
+                }else{
+                    return `Invalid Start Time.`;
+                }
+                if(data.bid<Data.bid){
+                    return `Not a valid bid by user:${data.user_id}`;
+                }
+                if(data.user_id==Data.bidder_id){
+                    return `User: ${data.user_id} has already placed a bid.`
+                }
+                let purse=await get_purse_cache(data.user_id);
+                if(!purse){
+                    const purse1=await getbalance(data.user_id);
+                    if(!purse1){
+                        return `Not a valid User:${data.user_id}`;
                     }else{
-                        return `Invalid Start Time.`;
+                        purse={
+                            bidder_id:data.user_id,
+                            budget:purse1,
+                        }
+                        set_purse_cache({
+                            bidder_id:data.user_id,
+                            budget:purse1,
+                        })
                     }
-                }else if(typeof(Data)=='string'){
-                    return Data
-                }else{
-                    return "No Auction Found"
                 }
-                const current_bid=Bid_Data.get(data.auction_room_id);
-                if(current_bid){
-                    if(data.bid<current_bid){
-                        return `Not a valid bid by user:${data.user_id}`;
-                    }
-                }else{
-                    return `Room with roomid ${data.auction_room_id} doesn't exist`;
+                if(purse.budget<data.bid){
+                    return `Insufficient Funds`;
                 }
-                Bid_Data.set(data.auction_room_id,data.bid);
+                set_bid_cache({
+                    room_id:data.auction_room_id,
+                    bidder_id:data.user_id,
+                    bid:data.bid,
+                    creater_id:Data.creater_id,
+                    item_id:Data.item_id,
+                    start_time:Data.start_time,
+                });
                 let Client_Data:WebSocket[]=[];
-                await Bidding_Chat(data,tx);
-                await Update_Room({
+                Bidding_Chat(data,tx);
+                Update_Room({
                     room_id:data.auction_room_id,
                     final_bidder:data.user_id,
                     bid:data.bid
@@ -208,66 +267,106 @@ export const Auction_Bids=async (data:bid_Data)=>{
 }
 
 
-export const Close_Auction=async (data:Final_data)=>{
+//From here we have to change at night
+export const Close_Auction=async (data:number)=>{
     try{
         return client.$transaction(async (tx) => {
-            const Update=await Update_Auction(data,tx);
-            if(typeof(Update)=='string'){
-                return Update;
-            }if(Update==null){
-                return `Unknown Database Error`;
+            let Bid_Data=await get_bid_cache(data);
+            if(!Bid_Data){
+                let Data1=await Get_Auction(data,tx);
+                if(typeof(Data1)=='string'){
+                    return Data1;
+                }
+                else if(Data1==null){
+                    return "No Auction Found"
+                }
+                else{
+                    Bid_Data={
+                        room_id:Data1.id,
+                        bid:Data1.initial_bid,
+                        bidder_id:Data1.findal_bidder_id,
+                        creater_id:Data1.creater_id,
+                        item_id:Data1.item_id,
+                        start_time:Data1.start_time,
+                    }
+                    set_bid_cache({
+                        room_id:Data1.id,
+                        bid:Data1.initial_bid,
+                        bidder_id:Data1.findal_bidder_id,
+                        creater_id:Data1.creater_id,
+                        item_id:Data1.item_id,
+                        start_time:Data1.start_time,
+                    });
+                }
             }
-            const Data=await Get_Auction(data.room_id,tx);
-            if(Data!=null && typeof(Data)!='string'){
-                const Item_Details=await Get_Item(Data.item_id,tx);
+            Update_Auction({
+                room_id:data,
+                initial_bid:100,
+                final_bid:Bid_Data?.bid,
+                findal_bidder_id:Bid_Data?.bidder_id,
+                status:'Completed'
+            },tx);
+            //Change Lot of things as Cache came 
+            let Item=await get_item_cache(Bid_Data.item_id);
+            if(Item==null){
+                let Item_Details=await Get_Item(Bid_Data.item_id,tx);
                 if(typeof(Item_Details)=='string'){
                     return Item_Details;
-                }if(Item_Details==null){
-                    return `Item of Itemid:${Data.item_id} is not found`
-                }
-                const Patch=await Update_Item({
-                    id:Item_Details.id,
-                    description:Item_Details.description,
-                    status:"Sold",
-                },tx);
-                if(typeof(Patch)=='string'){
-                    return Patch;
-                }if(Patch==null){
-                    return `Item of Itemid:${Data.item_id} can't be patched.`
-                }
-                const Business_History=await Create_Business_History({
-                    Amount:Data.final_bid,
-                    buyer_Id:data.findal_bidder_id,
-                    seller_Id:Data.creater_id,
-                    itemid:Data.item_id,
-                    room_Id:data.room_id,
-                },tx);
-                if(typeof(Business_History)=='string'){
-                    return Business_History;
-                }if(Business_History==null){
-                    return `Business_History of Itemid:${Data.item_id} can't be created.`
-                }
-                const Room_Data=Rooms.get(data.room_id);
-                if(Room_Data){
-                    let Client_Data:WebSocket[]=[];
-                    for(let item of Room_Data){
-                        Client_Data.push(item.client);
-                    }Rooms.delete(data.room_id);
-                    await Post_Notification({
-                        userid:Data.creater_id,
-                        message:`Room: ${data.room_id} has been closed and auction has been officially ended with highest bidder: ${Data.findal_bidder_id} quoting an amount of $${Data.final_bid}`,
-                    });
-                    return Client_Data;
+                }else if(Item_Details==null){
+                    return `Item of Itemid:${Bid_Data.item_id} is not found`
                 }else{
-                    return `Room with roomid ${data.room_id} doesn't exist`;
+                    Item={
+                        item_id:Item_Details.id,
+                        name:Item_Details.name,
+                        owner_id:Item_Details.owner_id,
+                        description:Item_Details.description,
+                        status:Item_Details.status
+                    }
+                    set_item_cache({
+                        item_id:Item_Details.id,
+                        name:Item_Details.name,
+                        owner_id:Item_Details.owner_id,
+                        description:Item_Details.description,
+                        status:Item_Details.status
+                    });
                 }
-            }else if(typeof(Data)=='string'){
-                return Data;
-            }else{
-                return "No Auction Found";
             }
-        })
-        
+            let Item_Status:ItemStatusType;
+            if(Bid_Data.bidder_id==-1){
+                Item_Status="Unsold";
+            }else{
+                Item_Status="Sold";
+            }
+            Update_Item({
+                id:Item.item_id,
+                description:Item.description,
+                status:Item_Status,
+            },tx);
+            Create_Business_History({
+                Amount:Bid_Data.bid,
+                buyer_Id:Bid_Data.bidder_id,
+                seller_Id:Bid_Data.creater_id,
+                itemid:Bid_Data.item_id,
+                room_Id:Bid_Data.room_id,
+            },tx);
+            const Room_Data=await get_room_cache(data);
+            if(Room_Data){
+                let Client_Data:WebSocket[]=[];
+                for(let item of Room_Data){
+                    Client_Data.push(item.client);
+                }
+                Post_Notification({
+                    userid:Bid_Data.creater_id,
+                    message:`Room: ${Bid_Data.room_id} has been closed and auction has been officially ended with highest bidder: ${Bid_Data.bidder_id} quoting an amount of $${Bid_Data.bid}`,
+                });
+                del_room_cache(data);
+                del_bid_cache(data);
+                del_item_cache(Bid_Data.item_id);
+                return Client_Data;
+            }else{
+                return `Room with roomid ${Bid_Data.room_id} doesn't exist`;
+            }
+        }); 
     }catch(err){
         console.error("Service layer Error:", err);
     }
@@ -275,7 +374,7 @@ export const Close_Auction=async (data:Final_data)=>{
 
 export const Disconnecting=async (data:Disconnect_Data)=>{
     try{
-        const Data=Rooms.get(data.room_id);
+        const Data=await get_room_cache(data.room_id);
         if(Data){
             const index=Data.indexOf({
                 bidder_id:data.bidder_id,
@@ -283,7 +382,8 @@ export const Disconnecting=async (data:Disconnect_Data)=>{
                 creater_id:data.creater_id
             });
             if(index!=-1){
-                return Rooms.get(data.room_id)?.splice(index,1);
+                const Data=await get_room_cache(data.room_id);
+                return Data?.splice(index,1);
             }else{
                 return `No client of ClientId:${data.bidder_id} found in the room of roomid:${data.room_id}`;
             }
@@ -298,21 +398,40 @@ export const Disconnecting=async (data:Disconnect_Data)=>{
 export const Update_Status=async(data:number)=>{
     try{
         return client.$transaction(async (tx)=>{
-            const Item_Status=await Get_Item(data,tx);
-            if(typeof(Item_Status)!='string'){
-                const Update_Status=await Update_Item({
-                    id:Item_Status.id,
-                    description:Item_Status.description,
-                    status:'Bidding',
-                },tx);
-                if(typeof(Update_Status)==='string'){
-                    return Update_Status;
+            let Item=await get_item_cache(data);
+            if(Item==null){
+                let Item_Details=await Get_Item(data,tx);
+                if(typeof(Item_Details)=='string'){
+                    return Item_Details;
+                }else if(Item_Details==null){
+                    return `Item of Itemid:${data} is not found`
+                }else{
+                    Item={
+                        item_id:Item_Details.id,
+                        name:Item_Details.name,
+                        owner_id:Item_Details.owner_id,
+                        description:Item_Details.description,
+                        status:Item_Details.status
+                    }
+                    set_item_cache({
+                        item_id:Item_Details.id,
+                        name:Item_Details.name,
+                        owner_id:Item_Details.owner_id,
+                        description:Item_Details.description,
+                        status:Item_Details.status
+                    });
                 }
-                if(Update_Status===null){
-                    return `Server Error`;
-                }
-            }else{
-                return Item_Status;
+            }
+            const Update_Status=await Update_Item({
+                id:Item.item_id,
+                description:Item.description,
+                status:'Bidding',
+            },tx);
+            if(typeof(Update_Status)==='string'){
+                return Update_Status;
+            }
+            if(Update_Status===null){
+                return `Server Error`;
             }
         });
     }catch(err){

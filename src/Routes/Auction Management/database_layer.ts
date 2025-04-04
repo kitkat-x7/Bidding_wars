@@ -51,6 +51,7 @@ export const Create_Room=async (data:RoomData,tx:Prisma.TransactionClient)=>{
                 initial_bid:data.initial_bid,
                 creater_id:data.creater_id,
                 start_time:data.start_time,
+                findal_bidder_id:-1
             }
         });
         return Room;
@@ -81,22 +82,13 @@ export const Create_Room=async (data:RoomData,tx:Prisma.TransactionClient)=>{
 
 export const Bidding_Chat=async (data:ChatData,tx:Prisma.TransactionClient)=>{
     try{
-        const exist=await tx.auction.findUnique({
-            where:{
-                id:data.auction_room_id
+        await tx.room.create({
+            data:{
+                auction_room_id:data.auction_room_id,
+                user_id:data.user_id,
+                bid:data.bid
             }
         });
-        if(exist){
-            await tx.room.create({
-                data:{
-                    auction_room_id:data.auction_room_id,
-                    user_id:data.user_id,
-                    bid:data.bid
-                }
-            });
-        }else{
-            return `Room with this room id ${data.auction_room_id} doesn't exists`;
-        }
     }catch(err:any) {
         if(err instanceof Prisma.PrismaClientKnownRequestError){
             console.error("Prisma Known Error:", err.message, "Code:", err.code);

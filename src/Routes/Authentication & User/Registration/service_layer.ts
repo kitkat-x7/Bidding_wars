@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import jwt from "jsonwebtoken";
 import { Service_Layer_Error } from "../../../Validation & Error Handling/error";
 import { create_new_wallet } from "../Wallet/database_layer";
+import { set_user_cache } from "../../../Cache/cache_module";
 dotenv.config(); 
 
 interface Register_data{
@@ -50,6 +51,12 @@ export const login_service= async (data:Login_data)=>{
         if(!existing_user || !existing_user.status){
             throw new Service_Layer_Error("Unregistered User",403);
         }
+        set_user_cache({
+            user_id:existing_user.id,
+            email:existing_user.email,
+            phone_number:existing_user.phone_number,
+            name:existing_user.name,
+        })
         const verify=await bcrypt.compare(data.password,existing_user.password);
         if(verify){
             const JWT_SECRET = process.env.JWT_SECRET;

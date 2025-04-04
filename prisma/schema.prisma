@@ -95,7 +95,7 @@ model Auction{
   item_id Int
   initial_bid Float
   final_bid Float @default(0)
-  findal_bidder_id Int?
+  findal_bidder_id Int
   creater_id Int
   Creater User @relation(fields: [creater_id],references: [id])
   start_time String //EPOCH
