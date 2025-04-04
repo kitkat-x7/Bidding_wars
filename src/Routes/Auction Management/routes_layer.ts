@@ -40,6 +40,7 @@ wss.on('connection',(socket,req)=>{
                     }else{
                         socket.send("No Token Found");
                     }
+                    console.log('A');
                     const Room_Details=await Create_Auction_Room({
                         item_id:message.payload.item_id,
                         initial_bid:message.payload.initial_bid,

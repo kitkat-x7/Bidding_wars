@@ -9,11 +9,7 @@ interface User_Cache{
     phone_number:string,
 }
 
-interface Room_Details{
-    bidder_id:number,
-    client:WebSocket,
-    creater_id:number,
-}
+
 
 interface Purse_Details{
     bidder_id:number,
@@ -60,15 +56,7 @@ export const get_item_cache=async (item_id:number)=>{
 }
 
 
-export const get_room_cache=async (room_id:number)=>{
-    const id=`room${room_id}`;
-    const value=await myCache.get(id) as Room_Details[]|undefined;
-    if(value==undefined){
-        return null;
-    }else{
-        return value;
-    }
-}
+
 
 export const get_purse_cache=async (bidder_id:number)=>{
     const id=`purse${bidder_id}`;
@@ -90,18 +78,7 @@ export const get_bid_cache=async (room_id:number)=>{
     }
 }
 
-export const set_room_cache=async (room_id:number,data:Room_Details)=>{
-    const value=await get_room_cache(room_id) as Room_Details[]|undefined;
-    const id=`room${room_id}`;
-    if(value==undefined){
-        const Data=[];
-        Data.push(data);
-        myCache.set(id,Data);
-    }else{
-        value.push(data);
-        myCache.set(id,value)
-    }
-}
+
 
 export const set_purse_cache=(data:Purse_Details)=>{
     const id=`purse${data.bidder_id}`;
@@ -133,10 +110,6 @@ export const set_item_cache=(data:Item_Cache)=>{
     });
 }
 
-export const del_room_cache=(room_id:number)=>{
-    const id=`room${room_id}`;
-    myCache.del(id);
-}
 
 export const del_purse_cache=async (bidder_id:number)=>{
     const id=`purse${bidder_id}`;

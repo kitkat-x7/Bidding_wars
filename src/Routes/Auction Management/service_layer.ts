@@ -1,7 +1,7 @@
 import { Create_Room,Bidding_Chat, Update_Room, Update_Auction, Get_Auction,Create_Business_History, Get_Item, Update_Item } from "./database_layer";
 import WebSocket from "ws";
 import { Post_Notification } from "../Notifications/database_layer";
-import { get_room_cache,get_purse_cache,set_room_cache,set_purse_cache,del_room_cache,del_purse_cache, get_bid_cache, set_bid_cache, get_item_cache, set_item_cache, del_bid_cache, del_item_cache } from "../../Cache/cache_module";
+import { get_purse_cache,set_purse_cache, get_bid_cache, set_bid_cache, get_item_cache, set_item_cache, del_bid_cache, del_item_cache } from "../../Cache/cache_module";
 import { PrismaClient} from "@prisma/client";
 import { getbalance } from "../Authentication & User/Wallet/database_layer";
 const client=new PrismaClient();
@@ -12,6 +12,12 @@ interface Create_Auction_Room_Data{
     creater_id:number,
     client:WebSocket,
     start_time:string,
+}
+
+interface Room_Details{
+    bidder_id:number,
+    client:WebSocket,
+    creater_id:number,
 }
 interface Join_Auction_Room{
     room_id:number,
@@ -26,14 +32,7 @@ interface bid_Data{
 }
 
 
-type RoomStatusType = "Live" | "Completed" | "Halt" | "Not_Started";
-interface Final_data{
-    room_id:number,
-    initial_bid:number,
-    final_bid:number,
-    findal_bidder_id:number,
-    status:RoomStatusType
-}
+
 type ItemStatusType = "Sold" | "Unsold" | "Bidding" | "Onhold";
 interface Disconnect_Data{
     bidder_id:number,
@@ -42,6 +41,7 @@ interface Disconnect_Data{
     creater_id:number
 }
 
+let M = new Map<number, Room_Details[]>();
 export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
     try{
         return client.$transaction(async (tx) => {
@@ -55,7 +55,6 @@ export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
             //Check with GPT when 2 create request of same Item hits with Transaction enabled
             //Create a Cache for Previous Chats
             const Item_Status=await Get_Item(Auction_Room.item_id,tx);
-            
             if(typeof(Item_Status)!='string' && Item_Status!=null){
                 if(Item_Status.status==='Bidding' || Item_Status.status==='Onhold'){
                     return `Cannot create an Auction Room, as Item with Itemid:${Item_Status.id} is already in the room.`
@@ -63,6 +62,7 @@ export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
                 if(Item_Status.owner_id!=Auction_Room.creater_id){
                     return `Item with Itemid:${Item_Status.id} belongs to other person.`
                 }
+                
                 set_item_cache({
                     item_id:Item_Status.id,
                     name:Item_Status.name,
@@ -77,14 +77,16 @@ export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
             }
             const Room_Details=await Create_Room(Auction_Room,tx);
             if(Room_Details!=null && typeof(Room_Details)!='string'){
-                if(!await get_room_cache(Room_Details.id)){
-                    await set_room_cache(Room_Details.id,{
+                const Room_Cache=M.has(Room_Details.id);
+                if(Room_Cache==false){
+                   M.set(Room_Details.id,[{
                         bidder_id:Room_Details.creater_id,
                         client:data.client,
                         creater_id:Room_Details.creater_id
-                    });
+                    }]);
                 }
-                if(!await get_bid_cache(Room_Details.id)){
+                const Bid_Cache=await get_bid_cache(Room_Details.id);
+                if(Bid_Cache==null){
                     set_bid_cache({
                         room_id:Room_Details.id,
                         bid:0,
@@ -105,12 +107,20 @@ export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
                     description:Item_Status.description,
                     status:'Onhold',
                 },tx);
+                
                 if(typeof(Update_Status)==='string'){
                     return Update_Status;
                 }
                 if(Update_Status===null){
                     return `Server Error`;
                 }
+                set_item_cache({
+                    item_id:Item_Status.id,
+                    name:Item_Status.name,
+                    owner_id:Item_Status.owner_id,
+                    description:Item_Status.description,
+                    status:'Onhold',
+                });
                 //No await needed for notification
                 Post_Notification({
                     userid:data.creater_id,
@@ -131,7 +141,7 @@ export const Create_Auction_Room=async (data:Create_Auction_Room_Data)=>{
 
 export const Join_Auction_Room=async (data:Join_Auction_Room)=>{
     try{
-        const Room=await get_room_cache(data.room_id);
+        const Room=M.get(data.room_id);
         if(Room){
             const Room_Details=Room;
             if(Room_Details?.includes({
@@ -141,27 +151,23 @@ export const Join_Auction_Room=async (data:Join_Auction_Room)=>{
             })){
                 return `Client_id: ${data.creater_id} already exists in the room`;
             }else{
-                await set_room_cache(data.room_id,{
+                Room.push({
                     bidder_id:data.bidder_id,
                     client:data.client,
                     creater_id:data.bidder_id
                 });
+                M.set(data.room_id,Room);
             }
-            const Room_Data=await get_room_cache(data.room_id);
-            if(Room_Data){
-                let Client_Data:WebSocket[]=[];
-                for(let item of Room_Data){
-                    Client_Data.push(item.client);
-                }
-                //No await needed for notification
-                Post_Notification({
-                    userid:data.creater_id,
-                    message:`A new member: ${data.bidder_id} joined the auction room: ${data.room_id}`,
-                });
-                return Client_Data;
-            }else{
-                return `Room with roomid ${data.room_id} doesn't exist`;
+            let Client_Data:WebSocket[]=[];
+            for(let item of Room){
+                Client_Data.push(item.client);
             }
+            //No await needed for notification
+            Post_Notification({
+                userid:data.creater_id,
+                message:`A new member: ${data.bidder_id} joined the auction room: ${data.room_id}`,
+            });
+            return Client_Data;
         }else{
             return `Room with roomid ${data.room_id} doesn't exist`;
         }
@@ -173,7 +179,7 @@ export const Join_Auction_Room=async (data:Join_Auction_Room)=>{
 export const Auction_Bids=async (data:bid_Data)=>{
     try{
         return client.$transaction(async (tx) => {
-            const Room_Data=await get_room_cache(data.auction_room_id);    
+            const Room_Data=M.get(data.auction_room_id);    
             if(Room_Data){
                 let Data=await get_bid_cache(data.auction_room_id);
                 if(Data==null){
@@ -349,7 +355,7 @@ export const Close_Auction=async (data:number)=>{
                 itemid:Bid_Data.item_id,
                 room_Id:Bid_Data.room_id,
             },tx);
-            const Room_Data=await get_room_cache(data);
+            const Room_Data=M.get(data);
             if(Room_Data){
                 let Client_Data:WebSocket[]=[];
                 for(let item of Room_Data){
@@ -359,7 +365,6 @@ export const Close_Auction=async (data:number)=>{
                     userid:Bid_Data.creater_id,
                     message:`Room: ${Bid_Data.room_id} has been closed and auction has been officially ended with highest bidder: ${Bid_Data.bidder_id} quoting an amount of $${Bid_Data.bid}`,
                 });
-                del_room_cache(data);
                 del_bid_cache(data);
                 del_item_cache(Bid_Data.item_id);
                 return Client_Data;
@@ -374,7 +379,7 @@ export const Close_Auction=async (data:number)=>{
 
 export const Disconnecting=async (data:Disconnect_Data)=>{
     try{
-        const Data=await get_room_cache(data.room_id);
+        const Data=M.get(data.room_id);
         if(Data){
             const index=Data.indexOf({
                 bidder_id:data.bidder_id,
@@ -382,7 +387,7 @@ export const Disconnecting=async (data:Disconnect_Data)=>{
                 creater_id:data.creater_id
             });
             if(index!=-1){
-                const Data=await get_room_cache(data.room_id);
+                const Data=M.get(data.room_id);
                 return Data?.splice(index,1);
             }else{
                 return `No client of ClientId:${data.bidder_id} found in the room of roomid:${data.room_id}`;

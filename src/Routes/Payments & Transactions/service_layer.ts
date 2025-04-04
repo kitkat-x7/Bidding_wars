@@ -1,6 +1,7 @@
 import { Create_Transaction, Get_Transaction } from "./database_layer";
 import { Database_Layer_Error, Service_Layer_Error } from "../../Validation & Error Handling/error";
 import { getbalance, updatebalance } from "../Authentication & User/Wallet/database_layer";
+import { set_purse_cache } from "../../Cache/cache_module";
 
 type transaction_type = "Credit" | "Debit";
 interface Transaction{
@@ -15,12 +16,16 @@ export const Transaction_Process=async (data:Transaction)=>{
         if(data.type=='Credit'){
             const balance=await getbalance(data.user_Id);
             await updatebalance(data.user_Id,balance+data.amount);
-            const history=await Create_Transaction({
+            set_purse_cache({
+                bidder_id:data.user_Id,
+                budget:data.amount+balance
+            });
+            Create_Transaction({
                 user_Id:data.user_Id,
                 type:"Credit",
                 amount:data.amount,
             });
-            return history;
+            return `Transaction completed`;
         }
         else{
             const balance=await getbalance(data.user_Id);
@@ -28,12 +33,16 @@ export const Transaction_Process=async (data:Transaction)=>{
                 throw new Service_Layer_Error("Insufficient Balance",403);
             }else{
                 await updatebalance(data.user_Id,balance-data.amount);
-                const history=await Create_Transaction({
+                set_purse_cache({
+                    bidder_id:data.user_Id,
+                    budget:balance-data.amount,
+                });
+                Create_Transaction({
                     user_Id:data.user_Id,
                     type:'Debit',
                     amount:data.amount,
                 });
-                return history;
+                return `Transaction completed`;
             }
         }
     }catch(err){
